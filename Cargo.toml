@@ -1,0 +1,13 @@
+[package]
+name = "gopper"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+goblin = "0.8"
+color-eyre = "0.6"
+yaxpeax-x86 = "1.2"
+yaxpeax-arch = "0.2"
+iced-x86 = "1.20.0"
