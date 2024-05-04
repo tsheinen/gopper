@@ -10,6 +10,8 @@ use std::collections::HashMap;
 use std::env;
 use std::fmt::Display;
 use std::fs;
+use std::iter::{Flatten, Map};
+use std::ops::Range;
 use std::path::Path;
 use yaxpeax_arch::LengthedInstruction;
 use yaxpeax_x86::amd64::{InstDecoder, Opcode, Operand};
@@ -131,79 +133,66 @@ fn extract_got_functions(buffer: &[u8], elf: &Elf) -> HashMap<usize, String> {
     // HashMap::new()
 }
 
-// fn extract_plt_functions(buffer: &[u8], elf: &Elf) -> HashMap<usize, String> {
-//     let got_map = extract_got_functions(buffer, elf);
-//     for (a,b) in got_map.iter() {
-//         println!("{:X}: {}", a,b);
-//     }
-//     // println!("got map {:X?}", got_map);
-//     let decoder = InstDecoder::minimal();
-//     let (section_vaddr, start, size) = extract_section(elf, ".plt.sec");
-//     println!("start {:x} vaddr {:x}", start, section_vaddr);
-//     let section_buf = &buffer[start..start + size];
-//     let section_buf_iter = (0..size)
-//         .into_iter()
-//         .map(|i| (section_vaddr + i, &section_buf[i..]));
-//     let mut plt_map = HashMap::new();
-//     for (vaddr, slice) in section_buf_iter {
-//         if let Ok(instr) = decoder.decode_slice(slice) {
-//             if instr.opcode() == Opcode::ENDBR64 {
-//                 println!("instr: {}", instr);
-//                 let target = decoder
-//                     .decode_slice(&slice[(instr.len().to_const() as usize)..])
-//                     .unwrap();
-//                 println!("{:?}", target);
-//                 match target.operand(0) {
-//                     Operand::RegDisp(_, disp) => {
-//                         let phys_addr = add(start + vaddr - section_vaddr, instr.len().to_const() as i32 + disp + target.len().to_const() as i32);
-//                         let value = u64::from_be_bytes(buffer[phys_addr..phys_addr+8].try_into().unwrap());
-//                         println!("{:X?}", &buffer[phys_addr..phys_addr+64]);
-//                         println!("deref {:x} to {:x}", add(vaddr, instr.len().to_const() as i32 + disp + target.len().to_const() as i32), value);
 
-//                         plt_map.insert(
-//                             vaddr,
-//                             got_map.get(&add(vaddr, instr.len().to_const() as i32 + disp + target.len().to_const() as i32)).unwrap().to_string()
-//                         );
-//                     }
-//                     _ => {}
-//                 }
-//                 // println!("instr: {}", );
-//             }
-//         }
-//     }
-//     plt_map
-// }
+struct GadgetTerminalIterator<'a, 'b>
+{
+    buffer: &'a [u8],
+    elf: &'b Elf<'a>,
+    faddr: usize,
+    vaddr: usize,
+    decoder: Decoder<'a>,
+    sections: Box<dyn Iterator<Item=(usize,usize)>>,
+    // TODO optimize: this prob doesn't need to heap allocate
+    target_ranges: [Range<usize>; 1],
+}
 
-fn find_terminals(buffer: &[u8], elf: &Elf) -> Vec<Terminal> {
-    // TODO prob need to expand this to multiple PLT sections but its .plt.sec on test libc
-    let (plt_vaddr, _, plt_size) = extract_section(&elf, ".plt.sec");
-    let mut terminals = Vec::new();
-    for (vaddr, faddr, size) in extract_executable_sections(&elf) {
-        println!("start: {:X} end {:X}", vaddr, vaddr+size);
-        let section_buf = &buffer[faddr..faddr + size];
-        let mut decoder = Decoder::new(64, section_buf, DecoderOptions::NONE);
+impl<'a, 'b> GadgetTerminalIterator<'a, 'b>
+{
+    pub fn new(buffer: &'a [u8], elf: &'b Elf<'a>) -> Self {
+        let plt_sec = extract_section(&elf, ".plt.sec");
+        let mut decoder = Decoder::new(64, buffer, DecoderOptions::NONE);
+        let mut sections_iter = Box::new(extract_executable_sections(&elf).into_iter().map(|(vaddr, faddr, size)| {
+            (vaddr..vaddr+size).zip(faddr..faddr+size)
+        }).flatten());
+        // let (first_faddr, first_vaddr) = sections_iter.next().expect("executable addresses iter did not yield at least 1 address");
+        Self {
+            buffer: buffer,
+            elf: elf,
+            faddr: 0,
+            vaddr: 0,
+            decoder: decoder,
+            sections: sections_iter,
+            target_ranges: [
+                plt_sec.0..(plt_sec.0+plt_sec.2)
+            ]
 
-        for (vaddr, offset) in (0..size).map(|i| (vaddr + i, i)) {
-            let mut instr = Instruction::new();
-            decoder.set_ip(vaddr as u64);
-            decoder.set_position(offset);
-            decoder.decode_out(&mut instr);
-            // println!("{:X}: {} {:X}", instr.ip(), instr, instr.near_branch64());
-            if !instr.is_invalid() {
-                if instr.op0_kind() == OpKind::NearBranch64 {
-                    let target = instr.near_branch64() as usize;
-                    if target >= plt_vaddr && target <= plt_vaddr + plt_size {
-                        terminals.push(Terminal {
-                            faddr: faddr + offset,
-                            vaddr,
-                            target,
-                        });
-                    }
+        }
+    }
+}
+
+impl<'a, 'b> Iterator for GadgetTerminalIterator<'a, 'b>
+{
+    type Item = Terminal;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut instr = Instruction::new();
+        loop {
+            (self.vaddr, self.faddr) = self.sections.next()?;
+            self.decoder.set_ip(self.vaddr as u64);
+            self.decoder.set_position(self.faddr).expect("tried to decode address outside of file");
+            self.decoder.decode_out(&mut instr);
+            if !instr.is_invalid() && instr.op0_kind() == OpKind::NearBranch64 {
+                let target = instr.near_branch64() as usize;
+                if self.target_ranges.iter().any(|range| range.contains(&target)) {
+                    return Some(Terminal {
+                        vaddr: self.vaddr,
+                        faddr: self.faddr,
+                        target
+                    })
                 }
             }
         }
     }
-    terminals
 }
 
 fn find_gadgets(buffer: &[u8], elf: &Elf, terminal: Terminal, gadgets: &mut Vec<Gadget>) {
@@ -244,23 +233,13 @@ fn main() -> Result<()> {
                     println!("elf: {:X?}", extract_section(&elf, ".got.plt"));
                     println!("elf: {:X?}", extract_section(&elf, ".plt.sec"));
                     let mut gadgets = Vec::new();
-                    for terminal in find_terminals(&buffer, &elf) {
+                    for terminal in GadgetTerminalIterator::new(&buffer, &elf) {
                         find_gadgets(&buffer, &elf, terminal, &mut gadgets);
                         // println!("{}", terminal);
                     }
                     for gadget in gadgets {
                         println!("{}", gadget.decode(&buffer));
                     }
-                    // extract_plt_functions(&buffer, &elf);
-                    // let decoder = InstDecoder::minimal();
-                    // for (vaddr, start, size) in extract_executable_sections(&elf) {
-                    //     let section_buf = &buffer[start..start+size];
-                    //     let section_buf_iter = (0..size).into_iter().map(|i| (vaddr+i, &section_buf[i..]));
-                    //     for (vaddr, slice) in section_buf_iter {
-                    //         if let Ok(instr) = decoder.decode_slice(slice) {
-
-                    //     }
-                    // }
                 }
                 // Object::PE(pe) => {
                 //     println!("pe: {:#?}", &pe);
