@@ -8,9 +8,8 @@ edition = "2021"
 [dependencies]
 goblin = "0.8"
 color-eyre = "0.6"
-yaxpeax-x86 = "1.2"
-yaxpeax-arch = "0.2"
 iced-x86 = "1.20.0"
+owo-colors = {version = "4", features = ["supports-colors"]}
 
 [dev-dependencies]
 criterion = { version = "0.4", features = ["html_reports"] }

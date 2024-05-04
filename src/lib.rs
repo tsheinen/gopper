@@ -4,10 +4,11 @@ use goblin::elf::Elf;
 use goblin::elf64::section_header::SHF_EXECINSTR;
 use goblin::Object;
 use iced_x86::{
-    Decoder, DecoderOptions, FlowControl, Formatter, Instruction, IntelFormatter, OpKind,
+    Decoder, DecoderOptions, FlowControl, Formatter, FormatterOutput, FormatterTextKind, Instruction, IntelFormatter, OpKind
 };
-use std::fmt::Display;
+use std::fmt::{Display, Write};
 use std::ops::Range;
+use owo_colors::{AnsiColors, OwoColorize, Stream::Stdout};
 
 /// A call into the GOT
 #[derive(Debug, Clone)]
@@ -16,6 +17,41 @@ pub struct Terminal {
     pub vaddr: usize,
     pub target: usize,
 }
+
+
+// Custom formatter output that stores the output in a vector.
+struct HighlightedFormatter {
+    buf: String
+}
+
+impl HighlightedFormatter {
+    pub fn new() -> Self {
+        Self {buf: String::new()}
+    }
+}
+
+impl Display for HighlightedFormatter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.buf)?;
+        Ok(())
+    }
+}
+
+impl FormatterOutput for HighlightedFormatter {
+    fn write(&mut self, text: &str, kind: FormatterTextKind) {
+        write!(&mut self.buf, "{}", text.if_supports_color(Stdout, |text| text.color(match kind {
+            FormatterTextKind::Number => AnsiColors::Green,
+            FormatterTextKind::Function | FormatterTextKind::FunctionAddress | FormatterTextKind::LabelAddress => AnsiColors::BrightBlue,
+            // FormatterTextKind::Directive | FormatterTextKind::Keyword => AnsiColors::BrightYellow,
+            FormatterTextKind::Prefix | FormatterTextKind::Mnemonic | FormatterTextKind::Directive | FormatterTextKind::Keyword => AnsiColors::BrightYellow,
+            FormatterTextKind::Register => AnsiColors::BrightRed,
+            _ => AnsiColors::White,
+        }))).expect("write to string should never fail")
+    
+    }
+}
+
+
 
 #[derive(Debug, Clone)]
 pub struct Gadget {
@@ -26,7 +62,7 @@ pub struct Gadget {
 
 impl Gadget {
     pub fn decode(&self, file: &[u8]) -> String {
-        let mut output = format!("{:X}: ", self.vaddr);
+        // let mut output = format!("{:X}: ", self.vaddr);
         let mut decoder = Decoder::new(64, file, DecoderOptions::NONE);
         let mut instr = Instruction::new();
         let mut formatter = IntelFormatter::new();
@@ -34,12 +70,15 @@ impl Gadget {
         decoder
             .set_position(self.faddr)
             .expect("tried to decode address outside of file");
+        let mut output = HighlightedFormatter::new();
+        output.write(&format!("{:X}: ", self.vaddr), FormatterTextKind::Number);
         while decoder.can_decode() && decoder.position() <= self.terminal.faddr {
             decoder.decode_out(&mut instr);
             formatter.format(&instr, &mut output);
-            output += "; "
+            output.write("; ", FormatterTextKind::Text);
+            
         }
-        output
+        output.to_string()
     }
 
     pub fn is_valid(&self, buffer: &[u8]) -> bool {
