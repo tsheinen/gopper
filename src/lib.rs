@@ -7,7 +7,6 @@ use iced_x86::{
     Decoder, DecoderOptions, FlowControl, Formatter, Instruction, IntelFormatter, OpKind,
 };
 use std::fmt::Display;
-use std::marker::PhantomData;
 use std::ops::Range;
 
 /// A call into the GOT
@@ -85,9 +84,6 @@ fn extract_section(elf: &Elf, section: &str) -> (usize, usize, usize) {
         .map(|(_, a, b, c)| (a as usize, b as usize, c as usize))
         .next()
         .expect("couldnt find section by name")
-
-    // println!("{:?} {:X?} {:X?}", name, offset, size);
-    // (offset..(offset + size)).filter(|x| x % 8 == 0).collect()
 }
 
 fn extract_executable_sections(elf: &Elf) -> Vec<(usize, usize, usize)> {
@@ -123,7 +119,6 @@ impl<'a> GadgetTerminalIterator<'a> {
                 .map(|(vaddr, faddr, size)| (vaddr..vaddr + size).zip(faddr..faddr + size))
                 .flatten(),
         );
-        // let (first_faddr, first_vaddr) = sections_iter.next().expect("executable addresses iter did not yield at least 1 address");
         Self {
             faddr: 0,
             vaddr: 0,
@@ -196,32 +191,6 @@ impl<'a> Iterator for GadgetsIterator<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.iter.next()
-    }
-}
-
-fn find_gadgets(buffer: &[u8], elf: &Elf, terminal: Terminal, gadgets: &mut Vec<Gadget>) {
-    // let mut gadgets = Vec::new();
-    let mut decoder = Decoder::new(64, buffer, DecoderOptions::NONE);
-    let mut instr = Instruction::new();
-    'outer: for prefix in 1..256 {
-        let mut position = terminal.faddr - prefix as usize;
-        decoder.set_ip(terminal.vaddr as u64 - prefix);
-        let _ = decoder.set_position(position);
-        while position < terminal.faddr {
-            decoder.decode_out(&mut instr);
-            position += instr.len();
-
-            if instr.flow_control() != FlowControl::Next || instr.is_invalid() {
-                continue 'outer;
-            }
-        }
-        if position == terminal.faddr {
-            gadgets.push(Gadget {
-                faddr: terminal.faddr - prefix as usize,
-                vaddr: terminal.vaddr - prefix as usize,
-                terminal: terminal.clone(),
-            })
-        }
     }
 }
 

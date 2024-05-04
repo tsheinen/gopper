@@ -3,9 +3,11 @@ use std::collections::HashMap;
 use color_eyre::{eyre::eyre, Result};
 use gopper::gadgets;
 
+const BYTES: &[u8; 6616616] = include_bytes!("./bins/libc6_2.35-0ubuntu3.1_amd64.so");
+
+
 #[test]
 fn find_known_good_gadgets_on_libc_2_35() -> Result<()> {
-    let BYTES = include_bytes!("./bins/libc6_2.35-0ubuntu3.1_amd64.so");
     let gadgets = gadgets(BYTES)?
         .into_iter()
         .map(|g| (g.vaddr, g))
