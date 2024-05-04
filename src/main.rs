@@ -4,7 +4,7 @@ use std::{env, fs, path::Path};
 
 use color_eyre::Result;
 
-use gopper::{get_all_gadgets, Gadget};
+use gopper::{get_all_gadgets};
 
 // use gopper::get_all_gadgets;
 

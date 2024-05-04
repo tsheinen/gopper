@@ -2,27 +2,19 @@ use color_eyre::eyre::bail;
 use color_eyre::Result;
 use goblin::elf::Elf;
 use goblin::elf64::section_header::SHF_EXECINSTR;
-use goblin::{error, Object};
+use goblin::Object;
 use iced_x86::{
-    Code, ConditionCode, Decoder, DecoderOptions, Instruction, InstructionInfoFactory, OpKind,
-    RflagsBits, FlowControl, IntelFormatter, Formatter,
+    Decoder, DecoderOptions, Instruction, OpKind, FlowControl, IntelFormatter, Formatter,
 };
-use std::collections::HashMap;
-use std::env;
 use std::fmt::Display;
-use std::fs;
-use std::iter::{Flatten, Map};
 use std::ops::Range;
-use std::path::Path;
-use yaxpeax_arch::LengthedInstruction;
-use yaxpeax_x86::amd64::{InstDecoder, Opcode, Operand};
 
 /// A call into the GOT
 #[derive(Debug, Clone)]
-struct Terminal {
-    faddr: usize,
-    vaddr: usize,
-    target: usize,
+pub struct Terminal {
+    pub faddr: usize,
+    pub vaddr: usize,
+    pub target: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -39,7 +31,7 @@ impl Gadget {
         let mut instr = Instruction::new();
         let mut formatter = IntelFormatter::new();
         decoder.set_ip(self.vaddr as u64);
-        decoder.set_position(self.faddr);
+        decoder.set_position(self.faddr).expect("tried to decode address outside of file");
         while decoder.can_decode() && decoder.position() <= self.terminal.faddr {
             decoder.decode_out(&mut instr);
             formatter.format(&instr, &mut output);
@@ -91,54 +83,8 @@ fn extract_executable_sections(elf: &Elf) -> Vec<(usize, usize, usize)> {
         .collect::<Vec<_>>()
 }
 
-fn add(u: usize, i: i32) -> usize {
-    if i.is_negative() {
-        u.wrapping_sub(i.wrapping_abs() as u32 as usize)
-    } else {
-        u.wrapping_add(i as usize)
-    }
-}
-
-// fn fmt_instruction(instr: &Instruction, vaddr: usize) -> String {
-//     match (instr.opcode(), instr.operand(0)) {
-//         (Opcode::CALL, Operand::ImmediateI32(rel)) => {
-//             // rebase
-//             format!("{:x}: call 0x{:x}", vaddr, add(vaddr, rel + 5))
-//         }
-//         _ => {
-//             format!("{:x}: {}", vaddr, instr)
-//         }
-//     }
-//     // if instr.opcode() == Opcode::CALL && instr.operand(0) == Operand::Imm {
-
-//     // }
-//     // if slice.len() > 8 {
-//     // format!("{:x}: {} {:X?}", vaddr, instr, instr)
-//     // }
-// }
-
-fn extract_got_functions(buffer: &[u8], elf: &Elf) -> HashMap<usize, String> {
-    elf.syms
-        .iter()
-        .filter(|sym| sym.is_function())
-        // .filter(|sym| sym.st_value == 0x000a9c90)
-        .map(|sym| {
-            (
-                sym.st_value as usize,
-                elf.strtab.get_at(sym.st_name).unwrap_or("").to_string(),
-            )
-        })
-        .collect()
-    // println!("{:?}", lol);
-
-    // HashMap::new()
-}
-
-
-struct GadgetTerminalIterator<'a, 'b>
+struct GadgetTerminalIterator<'a>
 {
-    buffer: &'a [u8],
-    elf: &'b Elf<'a>,
     faddr: usize,
     vaddr: usize,
     decoder: Decoder<'a>,
@@ -147,18 +93,16 @@ struct GadgetTerminalIterator<'a, 'b>
     target_ranges: [Range<usize>; 1],
 }
 
-impl<'a, 'b> GadgetTerminalIterator<'a, 'b>
+impl<'a> GadgetTerminalIterator<'a>
 {
-    pub fn new(buffer: &'a [u8], elf: &'b Elf<'a>) -> Self {
+    pub fn new(buffer: &'a [u8], elf: &Elf<'a>) -> Self {
         let plt_sec = extract_section(&elf, ".plt.sec");
-        let mut decoder = Decoder::new(64, buffer, DecoderOptions::NONE);
-        let mut sections_iter = Box::new(extract_executable_sections(&elf).into_iter().map(|(vaddr, faddr, size)| {
+        let decoder = Decoder::new(64, buffer, DecoderOptions::NONE);
+        let sections_iter = Box::new(extract_executable_sections(&elf).into_iter().map(|(vaddr, faddr, size)| {
             (vaddr..vaddr+size).zip(faddr..faddr+size)
         }).flatten());
         // let (first_faddr, first_vaddr) = sections_iter.next().expect("executable addresses iter did not yield at least 1 address");
         Self {
-            buffer: buffer,
-            elf: elf,
             faddr: 0,
             vaddr: 0,
             decoder: decoder,
@@ -171,7 +115,7 @@ impl<'a, 'b> GadgetTerminalIterator<'a, 'b>
     }
 }
 
-impl<'a, 'b> Iterator for GadgetTerminalIterator<'a, 'b>
+impl<'a> Iterator for GadgetTerminalIterator<'a>
 {
     type Item = Terminal;
 
