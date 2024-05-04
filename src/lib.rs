@@ -87,18 +87,19 @@ impl Gadget {
         let mut decoder = Decoder::new(64, buffer, DecoderOptions::NONE);
         let mut instr = Instruction::new();
         let mut position = 0;
-        while self.faddr + position < self.terminal.faddr {
-            decoder.set_ip(self.vaddr as u64 + position as u64);
-            decoder
-                .set_position(self.faddr + position)
-                .expect("tried to decode address outside of file");
+        decoder.set_ip(self.vaddr as u64 + position as u64);
+        decoder
+            .set_position(self.faddr + position)
+            .expect("tried to decode address outside of file");
+        while decoder.position() < self.terminal.faddr {
+
             decoder.decode_out(&mut instr);
             position += instr.len();
             if instr.flow_control() != FlowControl::Next || instr.is_invalid() {
                 return false;
             }
         }
-        return true;
+        return decoder.position() == self.terminal.faddr;
     }
 }
 
