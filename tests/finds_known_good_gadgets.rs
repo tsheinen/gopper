@@ -19,7 +19,7 @@ fn find_known_good_gadgets_on_libc_2_35() -> Result<()> {
             .ok_or(eyre!(
                 "couldn't find pop rbx; pop rbp; pop r12; pop r13; pop r14; gadget"
             ))?
-            .decode(BYTES),
+            .format_str(BYTES),
         "13076C: pop rbx; pop rbp; pop r12; pop r13; pop r14; jmp 0000000000028580h; "
     );
     Ok(())

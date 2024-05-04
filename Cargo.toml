@@ -10,6 +10,8 @@ goblin = "0.8"
 color-eyre = "0.6"
 iced-x86 = "1.20.0"
 owo-colors = {version = "4", features = ["supports-colors"]}
+clap = {version = "4.5.4", features = ["derive", "env"]}
+is-terminal = "0.4.12"
 
 [dev-dependencies]
 criterion = { version = "0.4", features = ["html_reports"] }

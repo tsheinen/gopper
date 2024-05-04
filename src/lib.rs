@@ -6,7 +6,9 @@ use goblin::Object;
 use iced_x86::{
     Decoder, DecoderOptions, FlowControl, Formatter, FormatterOutput, FormatterTextKind, Instruction, IntelFormatter, OpKind
 };
-use std::fmt::{Display, Write};
+use std::fmt::Display;
+use std::fs::File;
+use std::io::{IsTerminal, Write};
 use std::ops::Range;
 use owo_colors::{AnsiColors, OwoColorize, Stream::Stdout};
 
@@ -21,12 +23,13 @@ pub struct Terminal {
 
 // Custom formatter output that stores the output in a vector.
 struct HighlightedFormatter {
-    buf: String
+    buf: String,
+    colorize: bool
 }
 
 impl HighlightedFormatter {
-    pub fn new() -> Self {
-        Self {buf: String::new()}
+    pub fn new(colorize: bool) -> Self {
+        Self {buf: String::new(), colorize}
     }
 }
 
@@ -39,14 +42,20 @@ impl Display for HighlightedFormatter {
 
 impl FormatterOutput for HighlightedFormatter {
     fn write(&mut self, text: &str, kind: FormatterTextKind) {
-        write!(&mut self.buf, "{}", text.if_supports_color(Stdout, |text| text.color(match kind {
-            FormatterTextKind::Number => AnsiColors::Green,
-            FormatterTextKind::Function | FormatterTextKind::FunctionAddress | FormatterTextKind::LabelAddress => AnsiColors::BrightBlue,
-            // FormatterTextKind::Directive | FormatterTextKind::Keyword => AnsiColors::BrightYellow,
-            FormatterTextKind::Prefix | FormatterTextKind::Mnemonic | FormatterTextKind::Directive | FormatterTextKind::Keyword => AnsiColors::BrightYellow,
-            FormatterTextKind::Register => AnsiColors::BrightRed,
-            _ => AnsiColors::White,
-        }))).expect("write to string should never fail")
+        use std::fmt::Write;
+        if self.colorize {
+            write!(&mut self.buf, "{}", text.color(match kind {
+                FormatterTextKind::Number => AnsiColors::Green,
+                FormatterTextKind::Function | FormatterTextKind::FunctionAddress | FormatterTextKind::LabelAddress => AnsiColors::BrightBlue,
+                // FormatterTextKind::Directive | FormatterTextKind::Keyword => AnsiColors::BrightYellow,
+                FormatterTextKind::Prefix | FormatterTextKind::Mnemonic | FormatterTextKind::Directive | FormatterTextKind::Keyword => AnsiColors::BrightYellow,
+                FormatterTextKind::Register => AnsiColors::BrightRed,
+                _ => AnsiColors::White,
+            })).expect("write to string should never fail")
+        } else {
+            write!(&mut self.buf, "{}", text).expect("write to string should never fail")
+        }
+
     
     }
 }
@@ -61,7 +70,13 @@ pub struct Gadget {
 }
 
 impl Gadget {
-    pub fn decode(&self, file: &[u8]) -> String {
+    pub fn format_str(&self, file: &[u8]) -> String {
+        
+        let mut out = Vec::new();
+        self.format(file, false, &mut out);
+        String::from_utf8(out).expect("generated invalid utf 8 :(")
+    }
+    pub fn format<WRITE: Write>(&self, file: &[u8], colorize: bool, output: &mut WRITE) {
         // let mut output = format!("{:X}: ", self.vaddr);
         let mut decoder = Decoder::new(64, file, DecoderOptions::NONE);
         let mut instr = Instruction::new();
@@ -70,15 +85,15 @@ impl Gadget {
         decoder
             .set_position(self.faddr)
             .expect("tried to decode address outside of file");
-        let mut output = HighlightedFormatter::new();
-        output.write(&format!("{:X}: ", self.vaddr), FormatterTextKind::Number);
+        let mut highlighted_formatter = HighlightedFormatter::new(colorize);
+        highlighted_formatter.write(&format!("{:X}: ", self.vaddr), FormatterTextKind::Number);
         while decoder.can_decode() && decoder.position() <= self.terminal.faddr {
             decoder.decode_out(&mut instr);
-            formatter.format(&instr, &mut output);
-            output.write("; ", FormatterTextKind::Text);
+            formatter.format(&instr, &mut highlighted_formatter);
+            highlighted_formatter.write("; ", FormatterTextKind::Text);
             
         }
-        output.to_string()
+        write!(output, "{}", highlighted_formatter);
     }
 
     pub fn is_valid(&self, buffer: &[u8]) -> bool {
