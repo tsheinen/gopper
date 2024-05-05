@@ -2,7 +2,7 @@ use std::{env, fs::{self, File}, io::{self, IsTerminal, Write}, path::{Path, Pat
 
 use color_eyre::Result;
 
-use gopper::gadgets;
+use gopper::{gadgets, got_to_symbol, GadgetFormatter};
 
 // use gopper::get_all_gadgets;
 use clap::Parser;
@@ -37,8 +37,11 @@ fn main() -> Result<()> {
         (false, true)=> true,
         (false, false)=> output.is_terminal(),
     };
+    let mut formatter = GadgetFormatter::new(&file_buffer);
+    formatter.colorize(colorize);
+    formatter.symbols(got_to_symbol(&file_buffer));
     for gadget in gadgets(&file_buffer)? {
-        gadget.format(&file_buffer, colorize, &mut output);
+        formatter.format(&gadget, &mut output);
         write!(&mut output, "\n")?;
     }
     Ok(())

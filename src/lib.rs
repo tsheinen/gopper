@@ -6,7 +6,7 @@ use goblin::elf::Elf;
 use goblin::elf64::section_header::SHF_EXECINSTR;
 use goblin::Object;
 use iced_x86::{
-    Decoder, DecoderOptions, FlowControl, Formatter, FormatterOutput, FormatterTextKind, Instruction, IntelFormatter, Mnemonic, OpKind
+    Decoder, DecoderOptions, FlowControl, Formatter, FormatterOutput, FormatterTextKind, Instruction, IntelFormatter, Mnemonic, OpKind, SymbolResolver, SymbolResult
 };
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -49,7 +49,7 @@ impl FormatterOutput for HighlightedFormatter {
         if self.colorize {
             write!(&mut self.buf, "{}", text.color(match kind {
                 FormatterTextKind::Number => AnsiColors::Green,
-                FormatterTextKind::Function | FormatterTextKind::FunctionAddress | FormatterTextKind::LabelAddress => AnsiColors::BrightBlue,
+                FormatterTextKind::Function | FormatterTextKind::FunctionAddress | FormatterTextKind::LabelAddress | FormatterTextKind::Label => AnsiColors::BrightBlue,
                 // FormatterTextKind::Directive | FormatterTextKind::Keyword => AnsiColors::BrightYellow,
                 FormatterTextKind::Prefix | FormatterTextKind::Mnemonic | FormatterTextKind::Directive | FormatterTextKind::Keyword => AnsiColors::BrightYellow,
                 FormatterTextKind::Register => AnsiColors::BrightRed,
@@ -64,6 +64,85 @@ impl FormatterOutput for HighlightedFormatter {
 }
 
 
+struct GotSymbolResolve {
+    symbols: HashMap<usize, String>,
+    colorize: bool,
+}
+
+impl GotSymbolResolve {
+    pub fn new(symbols: HashMap<usize, String>, colorize: bool) -> Self {
+        Self {
+            symbols,
+            colorize
+        }
+    }
+}
+
+impl SymbolResolver for GotSymbolResolve {
+    fn symbol(
+            &mut self, instruction: &Instruction, operand: u32, instruction_operand: Option<u32>, address: u64, address_size: u32,
+        ) -> Option<iced_x86::SymbolResult<'_>> {
+        if let Some(symbol_string) = self.symbols.get(&(address as usize)) {
+            Some(SymbolResult::with_string(address, format!("{} ({})", symbol_string, if self.colorize { format!("{:X}", address).bright_green().to_string() } else {format!("{:X}", address)} )))
+        } else {
+            None
+        }
+    }
+}
+
+pub struct GadgetFormatter<'a> {
+    buffer: &'a [u8],
+    colorize: bool,
+    symbols: Option<HashMap<usize, String>>
+}
+
+impl<'a> GadgetFormatter<'a> {
+    pub fn new( buffer: &'a [u8]) -> Self {
+        Self {
+            buffer,
+            colorize: false,
+            symbols: None
+        }
+    }
+
+    pub fn symbols(&mut self, symbols: HashMap<usize, String>) -> &mut Self {
+        self.symbols = Some(symbols);
+        self
+    }
+
+    pub fn colorize(&mut self, colorize: bool) -> &mut Self {
+        self.colorize = colorize;
+        self
+    }
+
+    pub fn format_str(&self, gadget: &Gadget) -> String {
+        
+        let mut out = Vec::new();
+        self.format( gadget, &mut out);
+        String::from_utf8(out).expect("generated invalid utf 8 :(")
+    }
+    pub fn format<WRITE: Write>(&self, gadget: &Gadget, output: &mut WRITE) {
+        let mut decoder = Decoder::new(64, &self.buffer, DecoderOptions::NONE);
+        let mut instr = Instruction::new();
+        let symbol_resolver = self.symbols.clone().map(|s| Box::new(GotSymbolResolve::new(s, self.colorize)) as Box<dyn SymbolResolver>);
+        let mut formatter = IntelFormatter::with_options(symbol_resolver, None);
+        decoder.set_ip(gadget.vaddr as u64);
+        decoder
+            .set_position(gadget.faddr)
+            .expect("tried to decode address outside of file");
+        let mut highlighted_formatter = HighlightedFormatter::new(self.colorize);
+        highlighted_formatter.write(&format!("{:X}: ", gadget.vaddr), FormatterTextKind::Number);
+        while decoder.can_decode() && decoder.position() <= gadget.terminal.faddr {
+            decoder.decode_out(&mut instr);
+            formatter.format(&instr, &mut highlighted_formatter);
+            highlighted_formatter.write("; ", FormatterTextKind::Text);
+            
+        }
+        write!(output, "{}", highlighted_formatter);
+    }
+
+}
+
 
 #[derive(Debug, Clone)]
 pub struct Gadget {
@@ -73,31 +152,7 @@ pub struct Gadget {
 }
 
 impl Gadget {
-    pub fn format_str(&self, file: &[u8]) -> String {
-        
-        let mut out = Vec::new();
-        self.format(file, false, &mut out);
-        String::from_utf8(out).expect("generated invalid utf 8 :(")
-    }
-    pub fn format<WRITE: Write>(&self, file: &[u8], colorize: bool, output: &mut WRITE) {
-        // let mut output = format!("{:X}: ", self.vaddr);
-        let mut decoder = Decoder::new(64, file, DecoderOptions::NONE);
-        let mut instr = Instruction::new();
-        let mut formatter = IntelFormatter::new();
-        decoder.set_ip(self.vaddr as u64);
-        decoder
-            .set_position(self.faddr)
-            .expect("tried to decode address outside of file");
-        let mut highlighted_formatter = HighlightedFormatter::new(colorize);
-        highlighted_formatter.write(&format!("{:X}: ", self.vaddr), FormatterTextKind::Number);
-        while decoder.can_decode() && decoder.position() <= self.terminal.faddr {
-            decoder.decode_out(&mut instr);
-            formatter.format(&instr, &mut highlighted_formatter);
-            highlighted_formatter.write("; ", FormatterTextKind::Text);
-            
-        }
-        write!(output, "{}", highlighted_formatter);
-    }
+
 
     pub fn is_valid(&self, buffer: &[u8]) -> bool {
         // walk forward from start and see if there is a blocker before the terminal instruction
@@ -254,8 +309,14 @@ impl<'a> Iterator for GadgetsIterator<'a> {
 
 
 
-fn got_to_symbol(buffer: &[u8], elf: &Elf) -> HashMap<usize, String> {
-    println!("{:X?}", elf.pltrelocs);
+pub fn got_to_symbol(buffer: &[u8]) -> HashMap<usize, String> {
+    // println!("{:X?}", elf.pltrelocs);
+    let elf = match Object::parse(&buffer).expect("not a valid object") {
+        Object::Elf(elf) => {
+            elf
+        },
+        _ => panic!("can't pull symbols from non-elf...")
+    };
     let plt_relocs = elf.pltrelocs.iter().filter(|reloc| reloc.r_type == 0x25).map(|reloc| (reloc.r_offset, reloc.r_addend.expect("r_addend must exist"))).collect::<HashMap<_,_>>();
     // extract plt stubs
     // cross ref dynsyms with .rela.plt
@@ -271,7 +332,7 @@ fn got_to_symbol(buffer: &[u8], elf: &Elf) -> HashMap<usize, String> {
         })
         .collect();
 
-        let (section_vaddr, start, size) = extract_section(elf, ".plt.sec");
+        let (section_vaddr, start, size) = extract_section(&elf, ".plt.sec");
         let mut decoder = Decoder::new(64, buffer, DecoderOptions::NONE);
         let mut position = 0;
 
