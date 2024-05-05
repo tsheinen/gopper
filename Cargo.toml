@@ -2,7 +2,10 @@
 name = "gopper"
 version = "0.1.0"
 edition = "2021"
-
+license = "MIT"
+description = "Blazing fast GOT-oriented-programming gadget finder"
+repository = "https://github.com/tsheinen/gopper/"
+readme = "README.md"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
