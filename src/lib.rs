@@ -1,11 +1,14 @@
 use color_eyre::eyre::bail;
 use color_eyre::Result;
+use goblin::elf::reloc::R_X86_64_GOTOFF64;
+use goblin::elf::sym::{STT_FUNC, STT_GNU_IFUNC};
 use goblin::elf::Elf;
 use goblin::elf64::section_header::SHF_EXECINSTR;
 use goblin::Object;
 use iced_x86::{
-    Decoder, DecoderOptions, FlowControl, Formatter, FormatterOutput, FormatterTextKind, Instruction, IntelFormatter, OpKind
+    Decoder, DecoderOptions, FlowControl, Formatter, FormatterOutput, FormatterTextKind, Instruction, IntelFormatter, Mnemonic, OpKind
 };
+use std::collections::HashMap;
 use std::fmt::Display;
 use std::fs::File;
 use std::io::{IsTerminal, Write};
@@ -249,9 +252,71 @@ impl<'a> Iterator for GadgetsIterator<'a> {
     }
 }
 
+
+
+fn got_to_symbol(buffer: &[u8], elf: &Elf) -> HashMap<usize, String> {
+    println!("{:X?}", elf.pltrelocs);
+    let plt_relocs = elf.pltrelocs.iter().filter(|reloc| reloc.r_type == 0x25).map(|reloc| (reloc.r_offset, reloc.r_addend.expect("r_addend must exist"))).collect::<HashMap<_,_>>();
+    // extract plt stubs
+    // cross ref dynsyms with .rela.plt
+    // connect plt stub to symbol?
+    let sym_map: HashMap<usize, String> = elf.dynsyms
+        .iter()
+        .filter(|sym| sym.st_type() == STT_FUNC || sym.st_type() == STT_GNU_IFUNC)
+        .map(|sym| {
+            (
+                sym.st_value as usize,
+                elf.dynstrtab.get_at(sym.st_name).unwrap_or("").to_string(),
+            )
+        })
+        .collect();
+
+        let (section_vaddr, start, size) = extract_section(elf, ".plt.sec");
+        let mut decoder = Decoder::new(64, buffer, DecoderOptions::NONE);
+        let mut position = 0;
+
+        let mut plt_map = HashMap::new();
+        let mut instr = Instruction::new();
+        while decoder.position() + 0x10 < start + size {   
+            decoder.set_ip((section_vaddr + position) as u64);
+            decoder.set_position(start + position);
+            decoder.decode_out(&mut instr);
+            // println!("{:?} {:X}", instr, instr.ip());
+            assert_eq!(instr.mnemonic(), Mnemonic::Endbr64);
+            let plt_func_start = instr.ip();
+            decoder.decode_out(&mut instr);
+            assert_eq!(instr.op0_kind(), OpKind::Memory);
+            // println!("{:X?}", (plt_func_start, instr.memory_displacement64()));
+            plt_map.insert(plt_func_start, instr.memory_displacement64());
+            position += 0x10;
+        }
+
+        let mut fin_map = HashMap::new();
+        for (plt_stub, got_entry) in plt_map.iter() {
+            if let Some(func) = plt_relocs.get(&got_entry) {
+                // println!("FUNC: {:X}", func);
+                if let Some(name) = sym_map.get(&(*func as usize)) {
+                    fin_map.insert(*plt_stub as usize, name.to_string());
+                }
+            }
+        }
+
+        // println!("SYM MAP: {:?}", sym_map.get(&0xC54F0));
+        // println!("MAP {:X?}\n\n", &plt_map);
+        // println!("RELOCS {:X?}\n\n", &plt_relocs);
+        // println!("{:X?}\n\n", &sym_map);
+        // println!("{:X?}", &fin_map);
+        fin_map
+    //     let (section_vaddr, start, size) = extract_section(elf, ".plt.sec");
+
+
+}
+
 pub fn gadgets<'a>(buffer: &'a [u8]) -> Result<GadgetsIterator<'a>> {
     match Object::parse(&buffer)? {
         Object::Elf(elf) => {
+            // got_to_symbol(buffer, &elf);
+            // panic!("");
             return Ok(GadgetsIterator::new(buffer, &elf));
         }
         // Object::PE(pe) => {
